@@ -1,10 +1,4 @@
-use std::{
-    collections::{HashSet, VecDeque},
-    fs,
-    num::ParseIntError,
-    ops::Range,
-    str::FromStr,
-};
+use std::{collections::VecDeque, fs, num::ParseIntError, ops::Range, str::FromStr};
 
 fn main() {
     let input = fs::read_to_string("inputs/input.txt").unwrap();
@@ -131,16 +125,37 @@ impl FromStr for Pipeline {
 impl Pipeline {
     fn process(mut self) -> Vec<isize> {
         for round in self.mappings.into_iter() {
-            self.seeds = self
-                .seeds
-                .into_iter()
-                .flat_map(|seed_group| round.apply(seed_group))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect();
+            self.seeds = Self::dedup_ranges(
+                self.seeds
+                    .into_iter()
+                    .flat_map(|seed_group| round.apply(seed_group))
+                    .collect(),
+            );
         }
 
         self.seeds.into_iter().flatten().collect()
+    }
+
+    fn dedup_ranges(mut input: Vec<Range<isize>>) -> Vec<Range<isize>> {
+        input.sort_by(|a, b| a.start.cmp(&b.start));
+        let mut coll = vec![];
+
+        for i in input.into_iter() {
+            if coll.is_empty() {
+                coll.push(i);
+                continue;
+            }
+
+            let current_end = coll.last().unwrap().end;
+            if current_end > i.start {
+                let last = coll.last_mut().unwrap();
+                last.end = i.end.max(current_end);
+            } else {
+                coll.push(i);
+            }
+        }
+
+        coll
     }
 }
 
