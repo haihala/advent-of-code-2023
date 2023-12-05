@@ -123,7 +123,7 @@ impl FromStr for Pipeline {
     }
 }
 impl Pipeline {
-    fn process(mut self) -> Vec<isize> {
+    fn process(mut self) -> isize {
         for round in self.mappings.into_iter() {
             self.seeds = Self::dedup_ranges(
                 self.seeds
@@ -133,7 +133,7 @@ impl Pipeline {
             );
         }
 
-        self.seeds.into_iter().flatten().collect()
+        self.seeds.into_iter().flatten().min().unwrap()
     }
 
     fn dedup_ranges(mut input: Vec<Range<isize>>) -> Vec<Range<isize>> {
@@ -161,7 +161,7 @@ impl Pipeline {
 
 fn compute(input: String) -> String {
     let pipe = Pipeline::from_str(&input).unwrap();
-    pipe.process().into_iter().min().unwrap().to_string()
+    pipe.process().to_string()
 }
 
 #[cfg(test)]
