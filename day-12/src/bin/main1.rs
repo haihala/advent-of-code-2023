@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use std::{collections::HashMap, fs};
+use std::fs;
 
 fn main() {
     let input = fs::read_to_string("inputs/input.txt").unwrap();
@@ -24,272 +24,149 @@ impl From<char> for Symbol {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct Chunk(Vec<Symbol>);
-impl Chunk {
-    fn split_points(&self) -> Vec<usize> {
-        // Split points require broken springs on both sides
-        self.0
-            .iter()
-            .enumerate()
-            .tuple_windows()
-            .filter_map(|(_, (index, elem), _)| {
-                if *elem == Symbol::Unknown {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    fn split_at(&self, index: usize) -> (Chunk, Chunk) {
-        let (first, second) = self.0.split_at(index);
-        (
-            Chunk(first.to_vec()),
-            Chunk(second.into_iter().skip(1).cloned().collect()),
-        )
-    }
-
-    // Assumes a single continuous block
-    fn permutations(&self, goal: usize) -> usize {
-        let broken = self.0.iter().filter(|sym| **sym == Symbol::Broken).count();
-        if goal < broken {
-            return 0;
-        }
-        if goal == broken {
-            // This is for goal 0 cases
-            return 1;
-        }
-
-        let broken_indices = self
-            .0
-            .iter()
-            .enumerate()
-            .filter_map(|(index, sym)| {
-                if *sym == Symbol::Broken {
-                    Some(index)
-                } else {
-                    None
-                }
-            })
-            .collect_vec();
-
-        if let (Some(first), Some(last)) =
-            (broken_indices.iter().min(), broken_indices.iter().max())
-        {
-            // Have to fill the gap first
-            let gap = last - first + 1;
-            let to_spend = goal - gap;
-            let after_last = self.0.len() - last - 1;
-            let max_before_gap = first.min(&to_spend);
-
-            if max_before_gap + after_last < to_spend {
-                // There is not enough space to get that many
-                0
-            } else {
-                let min_after_last = to_spend - max_before_gap;
-                after_last - min_after_last + 1
-            }
-        } else {
-            // All question marks
-            match self.0.len().cmp(&goal) {
-                std::cmp::Ordering::Less => 0, // Can't form
-                std::cmp::Ordering::Equal => 1,
-                std::cmp::Ordering::Greater => self.0.len() - goal + 1,
-            }
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct Requirement {
+    len: usize,
+    fulfilling_indices: Vec<usize>,
+    fulfilled_by: Vec<usize>,
+    score: usize,
 }
-impl From<char> for Chunk {
-    fn from(value: char) -> Self {
-        let sym = Symbol::from(value);
-
-        Chunk(if sym == Symbol::Operational {
-            vec![]
-        } else {
-            vec![sym]
-        })
-    }
-}
-
-fn str_to_chunkvec(input: &str) -> Vec<Chunk> {
-    let mut chunks: Vec<_> = input.chars().fold(vec![], |mut acc, c| {
-        let Some(prev) = acc.last_mut() else {
-            // First
-            return vec![Chunk::from(c)];
-        };
-
-        match Symbol::from(c) {
-            Symbol::Operational => {
-                if *prev != Chunk::default() {
-                    acc.push(Chunk::default());
-                }
-            }
-            other => {
-                prev.0.push(other);
-            }
-        };
-
-        acc
-    });
-
-    // There is probably a clean declarative solution for this
-    if chunks.last().unwrap() == &Chunk::default() {
-        chunks.pop();
-    }
-
-    chunks
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct Tree {
-    chunk: Chunk,
-    permutations: HashMap<usize, usize>,
-    children: Vec<Tree>,
-}
-impl Tree {
-    fn from_chunk(chunk: Chunk) -> Self {
-        let sp = chunk.split_points();
-        let children: Vec<Tree> = sp
-            .into_iter()
-            .flat_map(|sp| {
-                let (l, r) = chunk.split_at(sp);
-
-                vec![Self::from_chunk(l), Self::from_chunk(r)]
-            })
-            .collect();
-
-        let permutations = (0..=chunk.0.len())
-            .filter_map(|goal| {
-                let biggest = vec![chunk.to_owned().permutations(goal)]
-                    .into_iter()
-                    .chain(
-                        children
-                            .iter()
-                            .map(|t| t.permutations.get(&goal).unwrap_or(&0).to_owned()),
-                    )
-                    .max()
-                    .unwrap();
-                if biggest == 0 {
-                    None
-                } else {
-                    Some((goal, biggest))
-                }
-            })
-            .collect();
-
-        Self {
-            children,
-            chunk,
-            permutations,
-        }
-    }
-
-    fn max_permutation(&self, splits: usize) -> HashMap<usize, usize> {
-        if splits == 0 {
-            return self.permutations.clone();
-        }
-
-        self.children
-            .iter()
-            .map(|child| child.max_permutation(splits - 1))
-            .fold(HashMap::new(), |mut acc, new| {
-                for (key, val) in new {
-                    acc.insert(key, val.max(acc.get(&key).unwrap_or(&0).to_owned()));
-                }
-
-                acc
-            })
-    }
-
-    fn max_splits(&self) -> usize {
-        self.children
-            .iter()
-            .map(|child| child.max_splits() + 1)
-            .max()
-            .unwrap_or(0) // No children => 0
+impl Requirement {
+    fn fullfill_with(&mut self, fulfilling_indices: Vec<usize>, score: usize) {
+        self.fulfilled_by = fulfilling_indices;
+        self.fulfilling_indices = vec![];
+        self.score = score;
     }
 }
 
 fn line_permutations(input: &str) -> usize {
     let (map, digits) = dbg!(input).split_once(" ").unwrap();
 
-    let checks: Vec<usize> = digits
+    let mut requirements: Vec<Requirement> = digits
         .split(",")
-        .map(|num| num.parse::<usize>().unwrap())
+        .map(|num| Requirement {
+            len: num.parse::<usize>().unwrap(),
+            ..Requirement::default()
+        })
         .collect();
 
-    str_to_chunkvec(map)
-        .into_iter()
-        .map(|chunk| Tree::from_chunk(chunk))
-        .map(|tree| {
-            // Max permutations(mapping from goal to permutations) for each split
-            (0..=tree.max_splits())
-                .map(|splits| tree.max_permutation(splits))
-                .enumerate()
-                .collect_vec()
-        })
-        // Above this, we have 1d iterator over the line, inside which we have something that maps
-        // from splits to max permutations
-        .fold(
-            vec![],
-            |acc: Vec<Vec<(usize, HashMap<usize, usize>)>>, splits_to_perms| {
-                if acc.is_empty() {
-                    return vec![splits_to_perms];
-                }
+    let bundles = get_bundles(map);
 
-                // We'd like to have several paths through the line
-                acc.into_iter()
-                    .cartesian_product(splits_to_perms.into_iter())
-                    .map(|(old, new)| {
-                        old.into_iter()
-                            .map(|(splits, mapping)| {
-                                (splits + new.0, {
-                                    new.1
-                                        .clone()
-                                        .into_iter()
-                                        .cartesian_product(
-                                            // Programming
-                                            mapping.into_iter().collect_vec().into_iter(),
-                                        )
-                                        // Sum keys, multiply values
-                                        // Key = How many things are here
-                                        // Value = permutations to get that many things
-                                        .map(|((n_key, n_val), (o_key, o_val))| {
-                                            (n_key + o_key, n_val * o_val)
-                                        })
-                                        .collect()
-                                })
-                            })
-                            .collect_vec()
-                    })
-                    .collect_vec()
-            },
-        )
+    // Eliminate ones where only one variation is legal
+    let borks = bundles
+        .iter()
+        .enumerate()
+        .filter(|(_, syms)| syms.iter().all(|sym| *sym == Symbol::Broken))
+        .collect_vec();
+
+    // The thingy at index is all bork
+    for req in &mut requirements {
+        for (index, _) in borks.iter().filter(|(_, syms)| syms.len() == req.len) {
+            req.fulfilling_indices.push(*index)
+        }
+    }
+
+    // The borks gotta go somewhere
+    // If a bork only goes into one place, that is where it shall go
+    for (index, _) in &borks {
+        let mut reqs = requirements
+            .iter_mut()
+            .filter(|req| req.fulfilling_indices.contains(index));
+
+        if let Some(first) = reqs.next() {
+            if reqs.next().is_none() {
+                // This one only goes here
+                first.fullfill_with(vec![*index], 1);
+
+                // Since we found a place for this one, remove it from the others
+                for req in &mut requirements {
+                    req.fulfilling_indices.retain(|bundle| bundle != index)
+                }
+            }
+        }
+    }
+
+    // This goes for until we can't deduce any more
+    loop {
+        let mut index = 0;
+
+        // This goes for until we find one to change
+        let output = loop {
+            if index == requirements.len() - 1 {
+                break None;
+            }
+
+            let left = requirements.get(index).unwrap();
+            let right = requirements.get(index + 1).unwrap();
+
+            let left_fulfilled = left.score > 0;
+            let right_fulfilled = right.score > 0;
+
+            if left_fulfilled == right_fulfilled {
+                // Either both are fulfilled or neither one is
+                // Nothing to do here
+                index += 1;
+                continue;
+            }
+
+            if left_fulfilled {
+                // Right one isn't
+                let fulfilling_bundle = left.fulfilled_by[0];
+                let potential = fulfilling_bundle + 1;
+                if right.fulfilling_indices.contains(&potential) {
+                    break Some((index + 1, potential));
+                }
+            }
+
+            if right_fulfilled {
+                // Left one isn't
+                let fulfilling_bundle = right.fulfilled_by[0];
+                let potential = fulfilling_bundle - 1;
+                if left.fulfilling_indices.contains(&potential) {
+                    break Some((index, potential));
+                }
+            }
+
+            index += 1;
+        };
+
+        if let Some((target_req, target_bork)) = output {
+            requirements
+                .get_mut(target_req)
+                .unwrap()
+                .fullfill_with(vec![target_bork], 1);
+        } else {
+            break;
+        }
+    }
+
+    dbg!(&requirements);
+
+    requirements.into_iter().map(|req| req.score).product()
+}
+
+fn get_bundles(map: &str) -> Vec<Vec<Symbol>> {
+    let tokens = map.chars().map(|char| Symbol::from(char)).collect_vec();
+    let mut new_bundle = true;
+
+    tokens
         .into_iter()
-        .map(|path| {
-            path.into_iter()
-                .flat_map(|(_, goal_to_max_perms)| {
-                    goal_to_max_perms
-                        .into_iter()
-                        .map(move |(goal, perms)| (goal, perms))
-                })
-                .fold((vec![], 0), |mut acc, step| {
-                    (
-                        {
-                            acc.0.push(step.0);
-                            acc.0
-                        },
-                        acc.1 + step.1,
-                    )
-                })
+        .skip_while(|token| token == &Symbol::Operational)
+        .fold(vec![], |mut acc, token| {
+            match (token, new_bundle) {
+                (Symbol::Operational, _) => {
+                    new_bundle = true;
+                }
+                (sym, true) => {
+                    acc.push(vec![sym]);
+                    new_bundle = false;
+                }
+                (sym, false) => {
+                    acc.last_mut().unwrap().push(sym);
+                }
+            };
+            acc
         })
-        // Now we have a vec of paths through the thing
-        .filter(|(splits, _)| *splits == checks)
-        .map(|(_, max_permutations)| max_permutations)
-        .max()
-        .unwrap()
 }
 
 fn compute(input: String) -> String {
@@ -328,51 +205,6 @@ mod test {
             ("?###???????? 3,2,1", 10),
         ] {
             assert_eq!(line_permutations(line), expected);
-        }
-    }
-
-    #[test]
-    fn test_splitting1() {
-        let cv = str_to_chunkvec("#####");
-        assert_eq!(cv.len(), 1);
-        assert_eq!(cv.first().unwrap().split_points(), vec![]);
-    }
-
-    #[test]
-    fn test_splitting2() {
-        let cv = str_to_chunkvec("##?##");
-        assert_eq!(cv.len(), 1);
-        assert_eq!(cv.first().unwrap().split_points(), vec![2]);
-    }
-
-    #[test]
-    fn test_splitting3() {
-        let cv = str_to_chunkvec("##?##");
-        assert_eq!(cv.len(), 1);
-        assert_eq!(
-            cv.first().unwrap().split_at(2),
-            (
-                str_to_chunkvec("##")[0].clone(),
-                str_to_chunkvec("##")[0].clone()
-            )
-        );
-    }
-
-    #[test]
-    fn test_permutations() {
-        for (line, goal, expected) in vec![
-            ("#", 1, 1),
-            ("?", 1, 1),
-            ("?#", 2, 1),
-            ("?#?", 2, 2),
-            ("??#?", 2, 2),
-            ("???#?", 2, 2),
-            ("???#?", 3, 2),
-        ] {
-            assert_eq!(
-                str_to_chunkvec(line)[0].clone().permutations(goal),
-                expected
-            );
         }
     }
 }
