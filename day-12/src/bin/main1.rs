@@ -27,15 +27,19 @@ impl From<char> for Symbol {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct Requirement {
     len: usize,
-    fulfilling_indices: Vec<usize>,
+    potential_fillers: Vec<usize>,
     fulfilled_by: Vec<usize>,
     score: usize,
 }
 impl Requirement {
     fn fullfill_with(&mut self, fulfilling_indices: Vec<usize>, score: usize) {
         self.fulfilled_by = fulfilling_indices;
-        self.fulfilling_indices = vec![];
+        self.potential_fillers = vec![];
         self.score = score;
+    }
+
+    fn is_fulfilled(&self) -> bool {
+        self.score > 0
     }
 }
 
@@ -52,6 +56,63 @@ fn line_permutations(input: &str) -> usize {
 
     let bundles = get_bundles(map);
 
+    handle_borks(&bundles, &mut requirements);
+
+    handle_partials(&bundles, &mut requirements);
+
+    requirements.into_iter().map(|req| req.score).product()
+}
+
+fn handle_partials(bundles: &[Vec<Symbol>], requirements: &mut [Requirement]) {
+    let partials = bundles
+        .iter()
+        .enumerate()
+        .filter(|(_, items)| items.contains(&Symbol::Unknown))
+        .map(|(index, items)| {
+            (
+                index,
+                items.iter().filter(|i| **i == Symbol::Broken).count(),
+                items.len(),
+            )
+        })
+        .collect_vec();
+
+    for (index, min, max) in &partials {
+        for req in &mut *requirements {
+            if req.is_fulfilled() {
+                continue;
+            }
+
+            if req.len <= *max && req.len >= *min {
+                // Potentially there
+                req.potential_fillers.push(*index);
+            }
+        }
+    }
+
+    for req in &mut *requirements {
+        if req.potential_fillers.len() == 1 && !req.is_fulfilled() {
+            // Only one can fill that
+            let filler = req.potential_fillers.first().unwrap();
+            let (_, min, max) = partials.iter().find(|(i, _, _)| i == filler).unwrap();
+            // How many ways can you fill req.len
+            let score = if req.len == *min {
+                1
+            } else if req.len == *max {
+                1
+            } else {
+                let free = max - min;
+                req.len - free
+            };
+
+            req.fullfill_with(vec![*filler], score);
+        }
+    }
+
+    dbg!(&requirements);
+}
+
+fn handle_borks(bundles: &[Vec<Symbol>], requirements: &mut [Requirement]) {
     // Eliminate ones where only one variation is legal
     let borks = bundles
         .iter()
@@ -60,9 +121,9 @@ fn line_permutations(input: &str) -> usize {
         .collect_vec();
 
     // The thingy at index is all bork
-    for req in &mut requirements {
+    for req in &mut *requirements {
         for (index, _) in borks.iter().filter(|(_, syms)| syms.len() == req.len) {
-            req.fulfilling_indices.push(*index)
+            req.potential_fillers.push(*index)
         }
     }
 
@@ -71,7 +132,7 @@ fn line_permutations(input: &str) -> usize {
     for (index, _) in &borks {
         let mut reqs = requirements
             .iter_mut()
-            .filter(|req| req.fulfilling_indices.contains(index));
+            .filter(|req| req.potential_fillers.contains(index));
 
         if let Some(first) = reqs.next() {
             if reqs.next().is_none() {
@@ -79,11 +140,23 @@ fn line_permutations(input: &str) -> usize {
                 first.fullfill_with(vec![*index], 1);
 
                 // Since we found a place for this one, remove it from the others
-                for req in &mut requirements {
-                    req.fulfilling_indices.retain(|bundle| bundle != index)
+                for req in &mut *requirements {
+                    req.potential_fillers.retain(|bundle| bundle != index)
                 }
             }
         }
+    }
+
+    // Lock first and last
+    if borks.iter().any(|(i, _)| *i == 0) {
+        // First is a bork
+        let fr = requirements.first_mut().unwrap();
+        fr.fullfill_with(vec![0], 1);
+    }
+    if let Some((last, _)) = borks.iter().find(|(i, _)| *i == (bundles.len() - 1)) {
+        // Last is a bork
+        let fr = requirements.last_mut().unwrap();
+        fr.fullfill_with(vec![*last], 1);
     }
 
     // This goes for until we can't deduce any more
@@ -99,30 +172,27 @@ fn line_permutations(input: &str) -> usize {
             let left = requirements.get(index).unwrap();
             let right = requirements.get(index + 1).unwrap();
 
-            let left_fulfilled = left.score > 0;
-            let right_fulfilled = right.score > 0;
-
-            if left_fulfilled == right_fulfilled {
+            if left.is_fulfilled() == right.is_fulfilled() {
                 // Either both are fulfilled or neither one is
                 // Nothing to do here
                 index += 1;
                 continue;
             }
 
-            if left_fulfilled {
+            if left.is_fulfilled() {
                 // Right one isn't
                 let fulfilling_bundle = left.fulfilled_by[0];
                 let potential = fulfilling_bundle + 1;
-                if right.fulfilling_indices.contains(&potential) {
+                if right.potential_fillers.contains(&potential) {
                     break Some((index + 1, potential));
                 }
             }
 
-            if right_fulfilled {
+            if right.is_fulfilled() {
                 // Left one isn't
                 let fulfilling_bundle = right.fulfilled_by[0];
                 let potential = fulfilling_bundle - 1;
-                if left.fulfilling_indices.contains(&potential) {
+                if left.potential_fillers.contains(&potential) {
                     break Some((index, potential));
                 }
             }
@@ -140,9 +210,14 @@ fn line_permutations(input: &str) -> usize {
         }
     }
 
-    dbg!(&requirements);
+    assert!(borks.iter().all(|(bork, _)| requirements
+        .iter()
+        .any(|req| req.fulfilled_by.contains(bork))));
 
-    requirements.into_iter().map(|req| req.score).product()
+    for req in &mut *requirements {
+        req.potential_fillers
+            .retain(|filler| !borks.iter().map(|(i, _)| *i).collect_vec().contains(filler));
+    }
 }
 
 fn get_bundles(map: &str) -> Vec<Vec<Symbol>> {
