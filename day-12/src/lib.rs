@@ -1,24 +1,6 @@
 use itertools::Itertools;
 use std::iter;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Symbol {
-    Operational,
-    Broken,
-    Unknown,
-}
-impl From<char> for Symbol {
-    fn from(value: char) -> Self {
-        match value {
-            '.' => Self::Operational,
-            '#' => Self::Broken,
-            '?' => Self::Unknown,
-
-            _ => panic!("Unknown char '{:?}'", value),
-        }
-    }
-}
-
 pub fn line_permutations(input: &str) -> usize {
     let (map, digits) = input.split_once(" ").unwrap();
 
@@ -29,81 +11,53 @@ pub fn line_permutations(input: &str) -> usize {
         .map(|num| num.parse::<usize>().unwrap())
         .collect();
 
-    iter::repeat(map)
-        .take(5)
-        .join("?")
-        .chars()
-        .map(|char| Symbol::from(char))
-        .fold(vec![vec![]], |branches, sym| {
-            branches
-                .into_iter()
-                .flat_map(|mut inner| match sym {
-                    Symbol::Unknown => {
-                        let mut fork = inner.clone();
+    let input = iter::repeat(map).take(5).join("?");
 
-                        if let Some(last) = inner.last_mut() {
-                            *last += 1;
-
-                            if *last > 1 {
-                                // Was not 0, meaning add a new zero
-                                fork.push(0);
-                            }
-                        } else {
-                            inner.push(1);
-                            fork.push(0);
-                        }
-
-                        vec![inner, fork]
-                    }
-                    Symbol::Broken => {
-                        if let Some(last) = inner.last_mut() {
-                            *last += 1;
-                        } else {
-                            inner.push(1);
-                        }
-
-                        vec![inner]
-                    }
-                    Symbol::Operational => {
-                        if inner.last_mut().is_none() || inner.last().unwrap() != &0 {
-                            inner.push(0);
-                        }
-                        vec![inner]
-                    }
-                })
-                .filter(|line| requirements_match(line, &requirements))
-                .collect()
-        })
-        .into_iter()
-        .filter(|line| line.into_iter().filter(|n| **n != 0).cloned().collect_vec() == requirements)
-        .count()
+    recurse(requirements, input)
 }
 
-fn requirements_match(line: &[usize], requirements: &[usize]) -> bool {
-    for (index, bork) in line.iter().filter(|n| **n != 0).enumerate() {
-        if index >= requirements.len() {
-            // Too many splits, not legal
-            return false;
-        }
-
-        let req = requirements[index];
-
-        if bork > &req {
-            return false;
-        }
+#[memoize::memoize]
+fn recurse(req: Vec<usize>, input: String) -> usize {
+    if req.is_empty() {
+        return !input.contains('#') as usize;
+    } else if input.is_empty() {
+        return 0; // Still requests to go and no input
     }
 
-    true
+    if input.len() < req.iter().sum::<usize>() + req.len() - 1 {
+        return 0;
+    }
+
+    let mut chars = input.chars();
+
+    match chars.next().unwrap() {
+        '#' => hash_recurse(req, input),
+        '.' => recurse(req, chars.collect()),
+        '?' => recurse(req.clone(), chars.collect()) + hash_recurse(req, input),
+        _ => panic!("Invalid character"),
+    }
+}
+
+fn hash_recurse(req: Vec<usize>, input: String) -> usize {
+    let first_req = req.iter().next().unwrap();
+    let chunk = input.chars().take(*first_req).collect_vec();
+
+    if !chunk.contains(&'.') && input.chars().skip(*first_req).next() != Some('#') {
+        let start_index = *first_req + 1;
+
+        recurse(
+            req.into_iter().skip(1).collect(),
+            input.chars().skip(start_index).collect(),
+        )
+    } else {
+        0
+    }
 }
 
 pub fn compute(input: String) -> String {
     input
         .lines()
-        .enumerate()
-        .map(|(index, line)| {
-            println!("{}", index);
-            dbg!(line_permutations(dbg!(line)))
-        })
+        .map(|line| line_permutations(line))
         .sum::<usize>()
         .to_string()
 }
@@ -114,11 +68,11 @@ mod test {
 
     use super::*;
 
-    // #[test]
-    // fn example() {
-    //     let unknowns = fs::read_to_string("inputs/example_unknowns.txt").unwrap();
-    //     assert_eq!("525152", compute(unknowns));
-    // }
+    #[test]
+    fn example() {
+        let unknowns = fs::read_to_string("inputs/example_unknowns.txt").unwrap();
+        assert_eq!("525152", compute(unknowns));
+    }
 
     #[test]
     fn no_unknowns() {
@@ -135,27 +89,29 @@ mod test {
         for (line, expected) in vec![
             ("???.### 1,1,3", 1),
             (".??..??...?##. 1,1,3", 16384), // Slow
-                                             // ("?#?#?#?#?#?#?#? 1,3,1,6", 1),
-                                             // ("????.#...#... 4,1,1", 16),    // Slow
-                                             // ("????.######..#####. 1,6,5", 2500),
-                                             // ("?###???????? 3,2,1", 506250), // Mega slow
+            ("?#?#?#?#?#?#?#? 1,3,1,6", 1),
+            ("????.#...#... 4,1,1", 16), // Slow
+            ("????.######..#####. 1,6,5", 2500),
+            ("?###???????? 3,2,1", 506250), // Mega slow
         ] {
             assert_eq!(line_permutations(dbg!(line)), expected);
         }
     }
 
     #[test]
-    fn requirements() {
-        for (line, expected) in vec![
-            (vec![], true),
-            (vec![1], true),
-            (vec![1, 1], true),
-            (vec![1, 2], true),
-            (vec![1, 3], false),
-            (vec![1, 2, 1], true),
-            (vec![1, 2, 3], true),
+    fn test_recurse() {
+        for (input, requests, expected) in vec![
+            ("".into(), vec![], 1),
+            (".".into(), vec![], 1),
+            ("?".into(), vec![], 1),
+            ("#".into(), vec![], 0),
+            ("#".into(), vec![1], 1),
+            ("##".into(), vec![2], 1),
+            ("#?".into(), vec![2], 1),
+            ("#?#".into(), vec![3], 1),
+            ("#?#".into(), vec![2], 0),
         ] {
-            assert_eq!(requirements_match(dbg!(&line), &vec![1, 2, 3]), expected);
+            assert_eq!(recurse(dbg!(requests), dbg!(input)), expected)
         }
     }
 }
